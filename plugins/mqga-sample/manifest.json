@@ -1,0 +1,16 @@
+{
+    "manifest_version": 4,
+    "type": "extension",
+    "slug": "mqga-sample",
+    "name": "MQGA 自检示例",
+    "version": "1.0.0",
+    "description": "验证 MakeQQGreatAgain 的主进程 / 预加载 / 渲染进程三段注入是否生效",
+    "author": { "name": "MakeQQGreatAgain" },
+    "platform": ["win32", "darwin", "linux"],
+    "dependencies": [],
+    "injects": {
+        "main": "main.js",
+        "preload": "preload.js",
+        "renderer": "renderer.js"
+    }
+}

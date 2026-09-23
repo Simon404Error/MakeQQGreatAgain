@@ -1,0 +1,8 @@
+{
+    "name": "mqga",
+    "version": "0.1.0",
+    "description": "MakeQQGreatAgain —— 面向 QQNT 的轻量插件宿主（独立实现，兼容 LiteLoaderQQNT 插件接口）",
+    "main": "./src/main.js",
+    "private": true,
+    "license": "MIT"
+}

@@ -1,0 +1,16 @@
+# 本地运行产物
+logs/
+data/
+out/
+node_modules/
+*.log
+
+# 绕过相关：一律不入库（由使用者自行提供）
+bin/
+*.dll
+*.node
+
+# 本机环境
+backup/
+asar-app/
+ref-*/
