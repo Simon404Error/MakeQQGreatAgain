@@ -148,10 +148,23 @@ function injectPreloadIntoSession(session) {
     }
 }
 
+function sessionName(webContents) {
+    // QQ 多账号用不同的 session 分区（persist:qqnt_<uid>），日志里带上便于区分账号窗口
+    try {
+        const s = webContents?.session;
+        if (!s) return "?";
+        const parts = [];
+        try { if (typeof s.getPartition === "function") parts.push("partition=" + (s.getPartition() || "default")); } catch (e) { /* 忽略 */ }
+        try { if (typeof s.getStoragePath === "function") parts.push("storage=" + s.getStoragePath()); } catch (e) { /* 忽略 */ }
+        try { if (!parts.length && s.storagePath) parts.push("storage=" + s.storagePath); } catch (e) { /* 忽略 */ }
+        return parts.length ? parts.join(" ") : "?";
+    } catch (e) { return "?"; }
+}
+
 function instrumentWindow(win) {
     const webContents = win?.webContents;
     if (!webContents) return;
-    host.log("BrowserWindow 已拦截，注入预加载脚本（session=" + (webContents.session ? "ok" : "?") + "）");
+    host.log("BrowserWindow 已拦截，注入预加载脚本（session=" + (webContents.session ? "ok" : "?") + " partition=" + sessionName(webContents) + " id=" + webContents.id + "）");
     injectPreloadIntoSession(webContents.session);
     try {
         const original = webContents._getPreloadPaths?.bind(webContents);
@@ -176,7 +189,7 @@ function instrumentWindow(win) {
                 if (typeof channel === "string" && channel.includes("RM_IPCFROM_")) {
                     const command = payload?.[1]?.cmdName;
                     if (command === "nodeIKernelSessionListener/onSessionInitComplete") {
-                        host.emit("login", payload[1]?.payload?.uid);
+                        host.emit("login", payload[1]?.payload?.uid, sessionName(webContents));
                     }
                 }
                 return send(...args);
@@ -188,7 +201,7 @@ function instrumentWindow(win) {
     try {
         if (typeof webContents.on === "function") {
             webContents.on("did-finish-load", () => {
-                try { host.log("窗口加载完成: url=" + webContents.getURL() + " title=" + (win.getTitle ? win.getTitle() : "")); } catch (e) { }
+                try { host.log("窗口加载完成: url=" + webContents.getURL() + " partition=" + sessionName(webContents) + " id=" + webContents.id + " title=" + (win.getTitle ? win.getTitle() : "")); } catch (e) { }
             });
         }
     } catch (e) {
@@ -291,6 +304,10 @@ function resolveApi(root, methodPath, args) {
 function installIpc(electron, state) {
     const { ipcMain } = electron;
     ipcMain.on("mqga.sync", (event, methodPath, args) => {
+        // 渲染进程来的日志带上账号分区（persist:qqnt_<uid>），便于区分是哪个账号的窗口
+        if (Array.isArray(methodPath) && methodPath[0] === "log" && Array.isArray(args) && args.length) {
+            try { args = ["[" + sessionName(event.sender) + "] " + String(args[0])]; } catch (e) { /* 忽略 */ }
+        }
         event.returnValue = resolveApi(state.api, methodPath, args);
     });
     ipcMain.handle("mqga.async", async (event, methodPath, args) => resolveApi(state.api, methodPath, args));
@@ -347,6 +364,7 @@ function installIpc(electron, state) {
 module.exports = {
     installElectronHook,
     installIpc,
+    sessionName,
     registerProtocol,
     registerProtocolOn,
     injectPreloadIntoSession,

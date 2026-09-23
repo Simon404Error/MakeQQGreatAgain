@@ -5,8 +5,12 @@ out/
 node_modules/
 *.log
 
-# 绕过相关：一律不入库（由使用者自行提供）
+# 启动校验处理相关：一律不入库（由使用者自行提供）
 bin/
+install.ps1
+install.cmd
+uninstall.cmd
+*.vbs
 *.dll
 *.node
 
@@ -14,3 +18,5 @@ bin/
 backup/
 asar-app/
 ref-*/
+tools/
+shots/

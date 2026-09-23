@@ -13,8 +13,34 @@ const state = {
     plugins: {},
     pluginModules: new Map(),
     reloadRequested: false,
-    installPlugin: () => ({ mqga_error: "插件安装功能尚未实现，请手动放入 plugins 目录" }),
-    deletePlugin: () => ({ mqga_error: "插件卸载功能尚未实现，请手动删除 plugins 下目录" }),
+    installPlugin: (source, options) => {
+        try {
+            const result = host.installPlugin(source, options || {});
+            host.log("安装插件请求 " + source + ": " + JSON.stringify(result));
+            if (result && result.ok) {
+                // 装完立刻重扫插件目录 + 重载主进程段 + 通知所有渲染进程重新注入，
+                // 这样不用重启 QQ 就能让新插件（含主题的 CSS）生效。
+                try {
+                    if (typeof state.requestReload === "function") state.requestReload();
+                    else state.reloadRequested = true;
+                } catch (e) { /* 忽略 */ }
+            }
+            return result;
+        } catch (e) {
+            host.log("安装插件失败 " + source + ": " + ((e && e.message) || e));
+            return { ok: false, error: (e && e.message) || String(e) };
+        }
+    },
+    deletePlugin: (slug, options) => {
+        try {
+            const result = host.uninstallPlugin(slug, options || {});
+            host.log("卸载插件请求 " + slug + ": " + JSON.stringify(result));
+            return result;
+        } catch (e) {
+            host.log("卸载插件失败 " + slug + ": " + ((e && e.message) || e));
+            return { ok: false, error: (e && e.message) || String(e) };
+        }
+    },
     disablePlugin: (slug) => {
         const config = host.loaderConfig();
         if (!config.disabled_plugins.includes(slug)) config.disabled_plugins.push(slug);
@@ -46,6 +72,86 @@ const state = {
 function buildApi() {
     const api = host.createApi(state);
     api.rendererScripts = () => state.rendererScripts();
+    // 安装插件：弹系统对话框选 zip / 文件夹，然后装进 plugins\<slug>
+    api.pickAndInstallPlugin = async (mode) => {
+        try {
+            const electron = require("electron");
+            const isFolder = mode === "folder";
+            host.log("面板安装: 打开选择对话框 mode=" + (mode || "zip"));
+            const picked = await electron.dialog.showOpenDialog({
+                title: isFolder ? "选择插件文件夹（含 manifest.json）" : "选择插件压缩包（zip）",
+                properties: isFolder ? ["openDirectory"] : ["openFile"],
+                filters: isFolder ? [] : [{ name: "插件压缩包", extensions: ["zip"] }],
+            });
+            if (picked.canceled || !picked.filePaths || !picked.filePaths.length) {
+                host.log("面板安装: 用户取消");
+                return { ok: false, canceled: true };
+            }
+            const source = picked.filePaths[0];
+            const result = state.installPlugin(source, {});
+            host.log("面板安装: source=" + source + " result=" + JSON.stringify(result));
+            return Object.assign({ path: source }, result || {});
+        } catch (e) {
+            host.log("安装插件失败:", e);
+            return { ok: false, error: (e && e.message) || String(e) };
+        }
+    };
+    api.installPluginFromPath = (source, options) => state.installPlugin(source, options || {});
+    // 面板用的 loader.json 开关（例如"插件加载器"总开关）
+    api.setLoaderConfig = (patch) => {
+        try {
+            const cfg = host.loaderConfig();
+            Object.assign(cfg, patch || {});
+            host.saveLoaderConfig(cfg);
+            host.log("loader.json 已更新: " + JSON.stringify(patch));
+            return { ok: true, config: cfg };
+        } catch (e) {
+            host.log("更新 loader.json 失败:", e);
+            return { ok: false, error: (e && e.message) || String(e) };
+        }
+    };
+    // 刷新：重扫插件目录、重载主进程段（清 require 缓存），并让所有渲染进程重新注入 preload/renderer 段
+    // 安装/卸载后自动调用（等价于点面板上的「刷新」，但不需要用户操作）
+    state.requestReload = () => {
+        try { api.reloadPlugins(); } catch (e) { host.log("安装后自动重载失败:", e); }
+    };
+    api.reloadPlugins = () => {
+        try {
+            const electron = require("electron");
+            state.plugins = host.loadPlugins();
+            globals.plugins = publicPlugins();
+            for (const plugin of Object.values(state.plugins)) {
+                if (plugin.disabled || plugin.incompatible || !plugin.path.injects.main) continue;
+                const file = plugin.path.injects.main;
+                try { delete require.cache[require.resolve(file)]; } catch (e) { /* 忽略 */ }
+                try {
+                    const exports = require(file);
+                    state.pluginModules.set(plugin, exports || {});
+                    host.setStage(plugin.manifest.slug, "main", true);
+                } catch (e) {
+                    const msg = (e && e.message) || String(e);
+                    // 重复注册（第二次 handler）不影响已有实现，视为仍可用
+                    if (/second handler|already registered/i.test(msg)) {
+                        host.setStage(plugin.manifest.slug, "main", true);
+                        host.log(`刷新：${plugin.manifest.slug} 重复注册提示（沿用原 handler）: ${msg}`);
+                    } else {
+                        host.setStage(plugin.manifest.slug, "main", false, msg);
+                        host.log(`刷新时插件主进程段失败 [${plugin.manifest.slug}]:`, e);
+                    }
+                }
+            }
+            try {
+                for (const wc of electron.webContents.getAllWebContents()) {
+                    try { wc.send("mqga.rerun"); } catch (e) { /* 忽略 */ }
+                }
+            } catch (e) { host.log("通知渲染进程重载失败:", e); }
+            host.log("已刷新插件（重扫目录 + 重载主进程段 + 通知渲染进程）");
+            return { plugins: publicPlugins(), at: Date.now() };
+        } catch (e) {
+            host.log("刷新插件失败:", e);
+            return { error: (e && e.message) || String(e) };
+        }
+    };
     api.pluginsInfo = () => publicPlugins();
     api.info = () => ({
         plugins: publicPlugins(),
@@ -53,6 +159,15 @@ function buildApi() {
         versions: globals.versions,
         preferences: host.loaderConfig(),
     });
+    try {
+        const cfg = host.loaderConfig();
+        host.log("loader.json 生效配置: " + JSON.stringify({
+            enable_plugins: cfg.enable_plugins,
+            debug_console: cfg.debug_console === true,
+            protect_login: cfg.protect_login !== false,
+            renderer_inject: cfg.renderer_inject,
+        }));
+    } catch (e) { host.log("打印 loader 配置失败:", e); }
     api.loader = {
         version: require(path.join(host.PATHS.root, "package.json")).version,
         paths: host.PATHS,
@@ -78,12 +193,15 @@ function readQqVersion() {
 
 function publicPlugins() {
     const result = {};
+    const protectedList = host.protectedPlugins();
     for (const [slug, plugin] of Object.entries(state.plugins)) {
         result[slug] = {
             manifest: plugin.manifest,
             disabled: plugin.disabled,
             incompatible: plugin.incompatible,
             path: plugin.path,
+            stages: host.stagesFor(plugin.manifest.slug),
+            protected: protectedList.includes(slug),
         };
     }
     return result;
@@ -129,8 +247,10 @@ function loadPluginMainScripts() {
         try {
             const exports = require(plugin.path.injects.main);
             state.pluginModules.set(plugin, exports || {});
+            host.setStage(plugin.manifest.slug, "main", true);
             host.log(`插件已加载（主进程）: ${plugin.manifest.slug}`);
         } catch (e) {
+            host.setStage(plugin.manifest.slug, "main", false, (e && e.message) || String(e));
             host.log(`插件主进程脚本加载失败 [${plugin.manifest.slug}]:`, e);
         }
     }
@@ -177,11 +297,16 @@ function installConsoleTee() {
     }
 }
 function bootstrap() {
-    host.log("================ MakeQQGreatAgain 启动 ================");
+    host.log("================ MakeQQGreatAgain 启动 (pid " + process.pid + ") ================");
     host.log("宿主目录:", host.PATHS.root);
     host.log("数据目录:", host.PATHS.profile);
 
     const electron = hooks.installElectronHook();
+
+    // 启动自检：公开版只报告宿主自身是否就绪。
+    // 启动期文件校验如何处理、以及相关二进制/生成器/安装脚本，均不在本仓库内，
+    // 原因见 SECURITY-NOTICE.md。
+    host.log("宿主已就绪，即将加载插件");
 
     state.api = buildApi();
     globals.api = state.api;
@@ -241,10 +366,13 @@ function bootstrap() {
         host.log("会话挂钩失败:", e);
     }
 
+    // LiteLoaderQQNT 面板里排队的"删除插件数据/本体"在下次启动时执行
+    try { host.applyPendingPluginDeletions(); } catch (e) { host.log("执行排队删除失败:", e); }
     loadPluginMainScripts();
 
     host.on("window-created", (win) => triggerPlugins("onBrowserWindowCreated", (plugin) => [win, plugin]));
     host.on("login", (uid) => triggerPlugins("onLogin", (plugin) => [uid, plugin]));
+    host.on("login", (uid, storage) => host.log("检测到登录事件: uid=" + uid + " " + (storage || "")));
 
     try {
         electron.app.on("ready", () => triggerPlugins("onReady", () => []));

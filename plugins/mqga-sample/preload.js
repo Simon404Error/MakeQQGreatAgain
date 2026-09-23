@@ -2,7 +2,9 @@
 const report = (msg) => {
     try { console.log("[mqga-sample]", msg); } catch (e) { /* 忽略 */ }
     try {
-        if (typeof MQGA !== "undefined" && MQGA.api && MQGA.api.log) MQGA.api.log("mqga-sample(preload): " + msg);
+        const api = (typeof MQGA !== "undefined" && MQGA && MQGA.api) || null;
+        if (api && api.loader && typeof api.loader.log === "function") api.loader.log("mqga-sample(preload): " + msg);
+        else if (api && typeof api.log === "function") api.log("mqga-sample(preload): " + msg);
     } catch (e) { /* 忽略 */ }
 };
 

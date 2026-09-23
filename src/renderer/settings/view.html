@@ -1,0 +1,160 @@
+<template id="plugin-item">
+    <setting-item>
+        <div class="info-area">
+            <div>
+                <slot class="icon"></slot>
+                <div>
+                    <setting-text>
+                        <slot class="name"></slot>
+                    </setting-text>
+                    <setting-text data-type="secondary">
+                        <slot class="description"></slot>
+                    </setting-text>
+                </div>
+            </div>
+            <setting-text data-type="secondary">
+                <span>版本：<slot class="version"></slot></span>
+                <span>作者：<slot class="authors"></slot></span>
+                <span>仓库：<slot class="repo"></slot></span>
+            </setting-text>
+        </div>
+        <setting-button data-type="secondary" class="manager">管理</setting-button>
+        <setting-modal class="manager-modal">
+            <setting-section data-title="插件设置（将在下次启动时生效）">
+                <setting-panel>
+                    <setting-list data-direction="column">
+                        <setting-item>
+                            <setting-text>启用插件</setting-text>
+                            <setting-switch class="switch"></setting-switch>
+                        </setting-item>
+                    </setting-list>
+                </setting-panel>
+                <setting-panel>
+                    <setting-list data-direction="column">
+                        <setting-item>
+                            <setting-text>删除插件数据</setting-text>
+                            <setting-switch class="data"></setting-switch>
+                        </setting-item>
+                        <setting-item>
+                            <setting-text>删除插件本体</setting-text>
+                            <setting-switch class="self"></setting-switch>
+                        </setting-item>
+                    </setting-list>
+                </setting-panel>
+            </setting-section>
+        </setting-modal>
+    </setting-item>
+</template>
+
+
+<setting-section data-title="版本" class="versions">
+    <setting-panel class="qwqnt" style="display: none;">
+        <setting-list data-direction="column">
+            <setting-item>
+                <setting-text>MGQA 作为 QwQNT 插件运行中</setting-text>
+            </setting-item>
+        </setting-list>
+    </setting-panel>
+    <setting-panel>
+        <setting-list data-direction="row">
+            <setting-item class="liteloader">
+                <setting-text>MGQA</setting-text>
+                <setting-text data-type="secondary" class="version"></setting-text>
+            </setting-item>
+            <setting-item class="qqnt">
+                <setting-text>QQNT</setting-text>
+                <setting-text data-type="secondary" class="version"></setting-text>
+            </setting-item>
+            <setting-item class="electron">
+                <setting-text>Electron</setting-text>
+                <setting-text data-type="secondary" class="version"></setting-text>
+            </setting-item>
+            <setting-item class="chromium">
+                <setting-text>Chromium</setting-text>
+                <setting-text data-type="secondary" class="version"></setting-text>
+            </setting-item>
+            <setting-item class="nodejs">
+                <setting-text>Node.js</setting-text>
+                <setting-text data-type="secondary" class="version"></setting-text>
+            </setting-item>
+        </setting-list>
+    </setting-panel>
+</setting-section>
+
+
+<setting-section data-title="插件" class="plugins">
+    <setting-panel>
+        <setting-list data-direction="column" class="plugin">
+            <setting-item class="install">
+                <div>
+                    <setting-text>安装新插件</setting-text>
+                    <setting-text data-type="secondary">支持类型：.zip | manifest.json</setting-text>
+                </div>
+                <setting-button data-type="secondary">选择文件</setting-button>
+            </setting-item>
+                        <setting-item class="install-folder">
+                <div>
+                    <setting-text>安装文件夹</setting-text>
+                    <setting-text data-type="secondary">选择已解压好的插件目录（内含 manifest.json）</setting-text>
+                </div>
+                <setting-button data-type="secondary">选择文件夹</setting-button>
+            </setting-item>
+<setting-item class="loader">
+                <setting-text>插件加载器</setting-text>
+                <setting-switch></setting-switch>
+            </setting-item>
+        </setting-list>
+    </setting-panel>
+    <setting-panel>
+        <setting-list data-title="扩展" is-collapsible data-direction="column" class="extension"></setting-list>
+    </setting-panel>
+    <setting-panel>
+        <setting-list data-title="主题" is-collapsible data-direction="column" class="theme"></setting-list>
+    </setting-panel>
+    <setting-panel>
+        <setting-list data-title="依赖" is-collapsible data-direction="column" class="framework"></setting-list>
+    </setting-panel>
+</setting-section>
+
+
+<setting-section data-title="关于" class="about">
+    <setting-panel>
+        <setting-list data-direction="column">
+            <setting-item>
+                <div>
+                    <setting-text>MakeQQGreatAgain</setting-text>
+                    <setting-text data-type="secondary">MakeQQGreatAgain（MGQA）是面向 QQNT 的轻量插件宿主，兼容 LiteLoaderQQNT 插件接口。</setting-text>
+                    <setting-text data-type="secondary">界面组件与样式直接来自 LiteLoaderQQNT，插件在其中渲染的结果与在 LiteLoaderQQNT 下一致。</setting-text>
+                </div>
+            </setting-item>
+            <setting-item>
+                <div>
+                    <setting-text>开源协议</setting-text>
+                    <setting-text data-type="secondary">
+                        <setting-link data-value="https://github.com/Simon404Error/MakeQQGreatAgain/blob/main/LICENSE">MIT License</setting-link>
+                    </setting-text>
+                </div>
+            </setting-item>
+        </setting-list>
+    </setting-panel>
+    <setting-panel>
+        <setting-list data-direction="column">
+            
+            
+            
+        </setting-list>
+    </setting-panel>
+    <setting-panel>
+        <setting-list data-direction="column">
+            <setting-item>
+                <div>
+                    <setting-text>面板来源</setting-text>
+                    <setting-text data-type="secondary">本面板的界面组件与样式直接来自 LiteLoaderQQNT：src/renderer/components（setting-* 自定义元素）、src/renderer/settings/view.html、src/renderer/settings/style.css。</setting-text>
+                    <setting-text data-type="secondary">
+                        <setting-link data-value="https://github.com/LiteLoaderQQNT/LiteLoaderQQNT">github.com/LiteLoaderQQNT/LiteLoaderQQNT</setting-link>
+                    </setting-text>
+                </div>
+            </setting-item>
+        </setting-list>
+    </setting-panel>
+</setting-section>
