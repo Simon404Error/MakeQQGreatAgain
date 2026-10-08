@@ -1,8 +1,8 @@
-# MakeQQGreatAgain
+# MakeQQGreatAgain - 让企鹅再次伟大！ ！
 
 ## LOG
 
-明天的事情明天再说。。
+明天的事情明天再说 。 。
 
 ## 这是什么
 
