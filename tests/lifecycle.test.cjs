@@ -109,12 +109,12 @@ test("public pickAndInstallPlugin alias uses async invoke rather than sync IPC",
     assert.equal(calls.length,1);assert.equal(calls[0].method[0],"pickAndInstallPlugin");
 });
 test("preload translates [false,false] deletion choices into a no-op",async()=>{
-    const calls=[],api=preloadApi((method,args)=>{calls.push({method,args});return {ok:true};},()=>{});
+    const calls=[],api=preloadApi(()=>{throw new Error("unexpected sync IPC");},(method,args)=>{calls.push({method,args});return Promise.resolve({ok:true});});
     await api.plugin.delete("example",[false,false],true);
     assert.equal(calls[0].args[1].mode,"none");
 });
 test("malformed preload deletion flags never become destructive requests",async()=>{
-    const calls=[],api=preloadApi((method,args)=>{calls.push({method,args});return {ok:true};},()=>{});
+    const calls=[],api=preloadApi(()=>{throw new Error("unexpected sync IPC");},(method,args)=>{calls.push({method,args});return Promise.resolve({ok:true});});
     for(const flags of [["false",false],[false],[]])assert.equal((await api.plugin.delete("example",flags)).ok,false);
     assert.equal(calls.length,0);
 });

@@ -1,7 +1,7 @@
 # Loader regression tests
 
 Run `npm test` with Node.js 22 or later. No npm dependencies are required.
-The 41 tests use Node's built-in runner, shared mocked Electron fixtures, and
+The 55 tests use Node's built-in runner, shared mocked Electron fixtures, and
 unique temporary filesystem profiles. They do not launch QQ, modify registry
 values, install a real loader, or inspect account/chat data.
 
@@ -27,6 +27,18 @@ values, install a real loader, or inspect account/chat data.
   and preserves newly queued requests and unrelated settings;
 - locked legacy config writes permit an idempotent retry;
 - atomic configuration replacement preserves the old file on write failure.
+
+## Shared configuration and asynchronous APIs
+- shared preferences synchronize the legacy override without losing other keys;
+- failed writes restore exact original bytes, including a UTF-8 BOM;
+- blocked rollback retains and reports an original-file backup;
+- later legacy edits are not overwritten by rollback;
+- malformed shared types/JSON are rejected without overwriting old files;
+- unrelated preferences leave the legacy file unchanged;
+- config namespaces reject traversal/reserved names and junction/symlink escapes;
+- public async preload methods use invoke, while private synchronous preload
+  module-loading operations retain their existing synchronous transport;
+- shell operations await completion and report failure rather than immediate true.
 
 CI covers Windows/Linux with Node.js 22/24. Mock tests do not prove QQ integration
 or compatibility with every plugin/version. The first repair commit was separately

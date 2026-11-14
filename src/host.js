@@ -4,6 +4,7 @@
  */
 const fs = require("fs");
 const path = require("path");
+const configPaths = require("./paths-safe.js");
 
 const ROOT = path.resolve(__dirname, "..");
 const PROFILE = process.env.MQGA_PROFILE || ROOT;
@@ -64,17 +65,18 @@ function readJson(file, fallback) {
     } catch (e) { return fallback; }
 }
 let jsonWriteSequence = 0;
-function writeJson(file, value) {
-    fs.mkdirSync(path.dirname(file), { recursive: true });
+function writeAtomic(file, content) {
+    fs.mkdirSync(path.dirname(file), {recursive:true});
     const temporary = file + ".tmp-" + process.pid + "-" + (++jsonWriteSequence);
     try {
-        fs.writeFileSync(temporary, JSON.stringify(value, null, 4), {encoding:"utf8", flag:"wx"});
+        fs.writeFileSync(temporary, content, {encoding:"utf8",flag:"wx"});
         fs.renameSync(temporary, file);
     } catch (error) {
         try { fs.unlinkSync(temporary); } catch (_) {}
         throw error;
     }
 }
+function writeJson(file, value) { writeAtomic(file, JSON.stringify(value,null,4)); }
 
 /* ------------------------------- 配置存储 ------------------------------- */
 
@@ -101,12 +103,61 @@ function loaderConfig() {
     return cfg;
 }
 function saveLoaderConfig(config) {
-    writeJson(LOADER_CONFIG_FILE, config);
-    return true;
+    if (!config || typeof config !== "object" || Array.isArray(config)) throw new TypeError("加载器配置必须为对象");
+    const has = (key) => Object.prototype.hasOwnProperty.call(config,key);
+    if (has("enable_plugins") && typeof config.enable_plugins !== "boolean") throw new TypeError("enable_plugins 必须为布尔值");
+    if (has("disabled_plugins") && (!Array.isArray(config.disabled_plugins) || !config.disabled_plugins.every((slug) => typeof slug === "string"))) throw new TypeError("disabled_plugins 必须为字符串数组");
+    const serialized = JSON.stringify(config,null,4);
+    const lqFile = path.join(PATHS.data,"LiteLoader","config.json");
+    let previous, next, backup = null, legacyCommitted = false, retainBackup = false;
+    if ((has("enable_plugins") || has("disabled_plugins")) && fs.existsSync(lqFile)) {
+        previous = fs.readFileSync(lqFile);
+        let legacy;
+        try { legacy = JSON.parse(previous.toString("utf8").replace(/^\uFEFF/,"")); }
+        catch (_) { throw new Error("旧版面板配置不是有效 JSON，未覆盖原文件"); }
+        if (!legacy || typeof legacy !== "object" || Array.isArray(legacy)) throw new Error("旧版面板配置不是对象，未覆盖原文件");
+        const updated = {...legacy};
+        if (has("enable_plugins")) updated.enable_plugins = config.enable_plugins;
+        if (has("disabled_plugins")) updated.disabled_plugins = config.disabled_plugins.slice();
+        if (JSON.stringify(updated) !== JSON.stringify(legacy)) next = JSON.stringify(updated,null,4);
+    }
+    try {
+        if (next !== undefined) {
+            backup = lqFile + ".rollback-" + process.pid + "-" + Date.now() + "-" + (++jsonWriteSequence);
+            fs.writeFileSync(backup,previous,{flag:"wx"});
+            writeAtomic(lqFile,next);
+            legacyCommitted = true;
+        }
+        writeAtomic(LOADER_CONFIG_FILE,serialized);
+        return true;
+    } catch (error) {
+        if (legacyCommitted) {
+            try {
+                if (!fs.readFileSync(lqFile).equals(Buffer.from(next,"utf8"))) throw new Error("配置已有更新，不覆盖后续修改");
+                fs.renameSync(backup,lqFile);
+            } catch (rollbackError) {
+                retainBackup = true;
+                const failure = new Error((error?.message || String(error)) + "; 配置回滚受阻，原文件保留在 " + backup + ": " + (rollbackError?.message || String(rollbackError)));
+                failure.recoveryPath = backup;
+                throw failure;
+            }
+        }
+        throw error;
+    } finally {
+        if (backup && !retainBackup) {
+            try { fs.unlinkSync(backup); }
+            catch (error) { if (error.code !== "ENOENT") log("配置备份清理未完成: " + backup,error); }
+        }
+    }
+}
+
+function configFile(slug) {
+    if (!isValidPluginSlug(slug)) throw new Error("无效的配置命名空间");
+    return configPaths.assertAllowed(path.join(PATHS.data,slug,"config.json"),[PATHS.data]);
 }
 
 function getConfig(slug, defaults = {}) {
-    const file = path.join(PATHS.data, slug, "config.json");
+    const file = configFile(slug);
     const stored = readJson(file, null);
     if (stored === null || typeof stored !== "object") {
         writeJson(file, defaults);
@@ -115,7 +166,7 @@ function getConfig(slug, defaults = {}) {
     return Object.assign({}, defaults, stored);
 }
 function setConfig(slug, config) {
-    writeJson(path.join(PATHS.data, slug, "config.json"), config);
+    writeJson(configFile(slug), config);
     return true;
 }
 
@@ -246,8 +297,8 @@ function createApi(state) {
             disable: state.disablePlugin,
             enable: state.enablePlugin,
         },
-        openExternal: (url) => (require("electron").shell.openExternal(String(url)), true),
-        openPath: (target) => (require("electron").shell.openPath(String(target)), true),
+        openExternal: async (url) => { await require("electron").shell.openExternal(String(url)); return true; },
+        openPath: async (target) => { const error = await require("electron").shell.openPath(String(target)); if (error) throw new Error(error); return true; },
         reload: () => (state.reloadRequested = true, true),
         log,
     };

@@ -105,11 +105,11 @@ if (MQGA_AUTH_PAGE && info?.preferences?.protect_login === false) {
 
 const apiMethods = {
     config: {
-        get: async (...args) => sync(["config", "get"], args),
-        set: async (...args) => sync(["config", "set"], args),
+        get: async (...args) => invoke(["config", "get"], args),
+        set: async (...args) => invoke(["config", "set"], args),
     },
     plugin: {
-        install: async (...args) => sync(["plugin", "install"], args),
+        install: async (...args) => invoke(["plugin", "install"], args),
         // LiteLoaderQQNT 的签名是 delete(slug, [self, data], now)；
         // 本宿主用 delete(slug, { mode }) —— 这里做一次转译，保证 LQ 的面板代码原样可用。
         delete: async (slug, options, now) => {
@@ -117,15 +117,15 @@ const apiMethods = {
                 if (options.length !== 2 || options.some((value) => typeof value !== "boolean")) return {ok:false,error:"删除选项必须是两个布尔值"};
                 const [self, data] = options;
                 const mode = self && data ? "all" : (self ? "plugin" : (data ? "data" : "none"));
-                return sync(["plugin", "delete"], [slug, { mode, self: !!self, data: !!data, now: now !== false }]);
+                return invoke(["plugin", "delete"], [slug, { mode, self: !!self, data: !!data, now: now !== false }]);
             }
-            return sync(["plugin", "delete"], [slug, options || {}]);
+            return invoke(["plugin", "delete"], [slug, options || {}]);
         },
-        uninstall: async (slug, options) => sync(["plugin", "delete"], [slug, options || {}]),
+        uninstall: async (slug, options) => invoke(["plugin", "delete"], [slug, options || {}]),
         pickAndInstall: async (mode) => invoke(["pickAndInstallPlugin"], [mode]),
         // 面板里「安装文件夹」那一行用的（LQ 的 view.html 没有这行，是 MGQA 加的）
         pickAndInstallFolder: async () => invoke(["pickAndInstallPlugin"], ["folder"]),
-        installFromPath: async (source, options) => sync(["installPluginFromPath"], [source, options || {}]),
+        installFromPath: async (source, options) => invoke(["installPluginFromPath"], [source, options || {}]),
         // Electron 32+ 删除了 File.path：主世界的 File 要经预加载的 webUtils 换出真实路径
         getPathForFile: (file) => {
             try {
@@ -136,16 +136,16 @@ const apiMethods = {
             } catch (e) { /* 忽略 */ }
             return "";
         },
-        setLoaderConfig: async (patch) => sync(["setLoaderConfig"], [patch || {}]),
-        disable: async (...args) => sync(["plugin", "disable"], args),
-        enable: async (...args) => sync(["plugin", "enable"], args),
+        setLoaderConfig: async (patch) => invoke(["setLoaderConfig"], [patch || {}]),
+        disable: async (...args) => invoke(["plugin", "disable"], args),
+        enable: async (...args) => invoke(["plugin", "enable"], args),
     },
-    openExternal: async (...args) => sync(["openExternal"], args),
-    openPath: async (...args) => sync(["openPath"], args),
-    log: async (...args) => sync(["log"], args),
-    reloadPlugins: async () => sync(["reloadPlugins"], []),
-    setLoaderConfig: async (patch) => sync(["setLoaderConfig"], [patch || {}]),
-    installPluginFromPath: async (source, options) => sync(["installPluginFromPath"], [source, options || {}]),
+    openExternal: async (...args) => invoke(["openExternal"], args),
+    openPath: async (...args) => invoke(["openPath"], args),
+    log: async (...args) => invoke(["log"], args),
+    reloadPlugins: async () => invoke(["reloadPlugins"], []),
+    setLoaderConfig: async (patch) => invoke(["setLoaderConfig"], [patch || {}]),
+    installPluginFromPath: async (source, options) => invoke(["installPluginFromPath"], [source, options || {}]),
     pickAndInstallPlugin: async (mode) => invoke(["pickAndInstallPlugin"], [mode]),
 };
 

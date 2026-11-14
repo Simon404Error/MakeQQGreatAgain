@@ -31,13 +31,13 @@ function hooksFixture(options = {}) {
     return {hooks:module.exports,electron,host,handlers,listeners,messages,protocols,setReady:(value)=>{ready=value;},OriginalWindow};
 }
 
-function hostFixture() {
+function hostFixture(options = {}) {
     const root=path.join(temp,"profile-"+Math.random().toString(16).slice(2));
     fs.mkdirSync(path.join(root,"src"),{recursive:true});
     const module={exports:{}};
     const proc={pid:process.pid,env:{MQGA_PROFILE:root},resourcesPath:path.join(root,"QQ","resources")};
     vm.runInNewContext(fs.readFileSync(path.join(loaderRoot,"src","host.js"),"utf8"),{
-        require,module,exports:module.exports,__dirname:path.join(root,"src"),process:proc,
+        require:(name) => name === "./paths-safe.js" ? safe : name === "electron" && options.electron ? options.electron : require(name),module,exports:module.exports,__dirname:path.join(root,"src"),process:proc,
         console:{log(){}},setInterval:()=>({unref(){}}),Date,Map,Set,Buffer,SharedArrayBuffer,Int32Array,Atomics
     },{filename:"host.js"});
     return {host:module.exports,root};
