@@ -118,6 +118,8 @@ function buildApi() {
     api.reloadPlugins = () => {
         try {
             const electron = require("electron");
+            const previousModules = new Map(Array.from(state.pluginModules, ([plugin, exports]) => [plugin.manifest.slug, exports]));
+            state.pluginModules.clear();
             state.plugins = host.loadPlugins();
             globals.plugins = publicPlugins();
             for (const plugin of Object.values(state.plugins)) {
@@ -131,7 +133,8 @@ function buildApi() {
                 } catch (e) {
                     const msg = (e && e.message) || String(e);
                     // 重复注册（第二次 handler）不影响已有实现，视为仍可用
-                    if (/second handler|already registered/i.test(msg)) {
+                    if (/second handler|already registered/i.test(msg) && previousModules.has(plugin.manifest.slug)) {
+                        state.pluginModules.set(plugin, previousModules.get(plugin.manifest.slug));
                         host.setStage(plugin.manifest.slug, "main", true);
                         host.log(`刷新：${plugin.manifest.slug} 重复注册提示（沿用原 handler）: ${msg}`);
                     } else {
@@ -375,7 +378,8 @@ function bootstrap() {
     host.on("login", (uid, storage) => host.log("检测到登录事件: uid=" + uid + " " + (storage || "")));
 
     try {
-        electron.app.on("ready", () => triggerPlugins("onReady", () => []));
+        if (electron.app.isReady()) setImmediate(() => triggerPlugins("onReady", () => []));
+        else electron.app.once("ready", () => triggerPlugins("onReady", () => []));
     } catch (e) {
         host.log("监听 app ready 失败:", e);
     }
@@ -383,30 +387,29 @@ function bootstrap() {
 
 installConsoleTee();
 
+const startupStatus = { version: require(path.join(host.PATHS.root, "package.json")).version, pid: process.pid, root: host.PATHS.root, ready: false, qqStarted: false, error: null };
 function startQq() {
     const target = path.join(process.resourcesPath, "app", ORIGINAL_ENTRY);
-    try {
-        require(target);
-        host.log("QQ 本体入口已加载:", target);
-        setImmediate(() => {
-            try {
-                if (global.launcher?.installPathPkgJson) {
-                    global.launcher.installPathPkgJson.main = ORIGINAL_ENTRY;
-                    host.log("已把内存态 package.json 的 main 还原为 " + ORIGINAL_ENTRY);
-                }
-            } catch (e) {
-                host.log("还原 installPathPkgJson.main 失败:", e);
-            }
-        });
-    } catch (e) {
-        host.log("QQ 本体入口加载失败:", e);
-    }
+    require(target);
+    startupStatus.qqStarted = true;
+    host.log("QQ 本体入口已加载:", target);
+    setImmediate(() => {
+        try { if (global.launcher?.installPathPkgJson) global.launcher.installPathPkgJson.main = ORIGINAL_ENTRY; }
+        catch (e) { host.log("还原内存态入口失败:", e); }
+    });
 }
 
 try {
     bootstrap();
-    startQq();
-    host.log("MakeQQGreatAgain 启动流程结束");
-} catch (e) {
-    host.log("MakeQQGreatAgain 启动失败:", e);
+    startupStatus.ready = true;
+} catch (error) {
+    startupStatus.error = error?.stack || String(error);
+    host.log("加载器启动失败（仍尝试原生 QQ）:", error);
+} finally {
+    try { startQq(); }
+    catch (error) { startupStatus.error = (startupStatus.error || "") + "\nQQ entry: " + (error?.stack || String(error)); host.log("QQ 本体入口失败:", error); }
+    try { host.writeJson(path.join(host.PATHS.logs, "startup-status.json"), startupStatus); }
+    catch (error) { host.log("写入启动状态失败:", error); }
 }
+module.exports = startupStatus;
+host.log("MakeQQGreatAgain 启动状态:", startupStatus);

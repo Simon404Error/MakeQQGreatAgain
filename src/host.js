@@ -35,19 +35,45 @@ function log(...args) {
     const line = `[${new Date().toISOString()}] ${args.map(stringify).join(" ")}`;
     try {
         if (!fs.existsSync(LOG_FILE)) fs.writeFileSync(LOG_FILE, "\uFEFF", "utf8");
-        fs.appendFileSync(LOG_FILE, line + "\r\n");
+        // perf: async append (sync write at high frequency stalls the main process)
+        fs.appendFile(LOG_FILE, line + "\r\n", () => {});
     } catch (e) { /* 忽略 */ }
     try { console.log("[MQGA]", line); } catch (e) { /* 忽略 */ }
 }
+
+// ---- 主进程卡顿看门狗：事件循环延迟 > 2s 记录现场（排查 QQ 未响应） ----
+(function () {
+    let last = Date.now();
+    setInterval(() => {
+        const now = Date.now();
+        const delay = now - last - 1000;
+        last = now;
+        if (delay > 2000) {
+            try {
+                fs.appendFile(path.join(PATHS.logs, "watchdog.log"),
+                    "[" + new Date().toISOString() + "] main-process event loop stalled " + delay + "ms\n", () => {});
+            } catch (e) { }
+        }
+    }, 1000).unref();
+})();
+
 function readJson(file, fallback) {
     try {
         const text = fs.readFileSync(file, "utf8").replace(/^\uFEFF/, ""); // 容忍 BOM（PowerShell 写出的 JSON 常带 BOM）
         return JSON.parse(text);
     } catch (e) { return fallback; }
 }
+let jsonWriteSequence = 0;
 function writeJson(file, value) {
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, JSON.stringify(value, null, 4), "utf8");
+    const temporary = file + ".tmp-" + process.pid + "-" + (++jsonWriteSequence);
+    try {
+        fs.writeFileSync(temporary, JSON.stringify(value, null, 4), {encoding:"utf8", flag:"wx"});
+        fs.renameSync(temporary, file);
+    } catch (error) {
+        try { fs.unlinkSync(temporary); } catch (_) {}
+        throw error;
+    }
 }
 
 /* ------------------------------- 配置存储 ------------------------------- */
@@ -469,7 +495,8 @@ function uninstallPlugin(slug, options = {}) {
         dirs.config = "error: " + ((e && e.message) || e);
     }
     log("已卸载插件: " + name + " mode=" + mode + " " + JSON.stringify(dirs));
-    const ok = mode === "data" ? dirs.data === "removed" : (dirs.plugin === "removed");
+    const success = (status) => ["removed", "not-found", "moved-to-trash"].includes(status);
+    const ok = mode === "data" ? success(dirs.data) : mode === "plugin" ? success(dirs.plugin) : success(dirs.plugin) && success(dirs.data);
     return { ok, slug: name, mode, dirs };
 }
 
@@ -483,10 +510,11 @@ function applyPendingPluginDeletions() {
     for (const slug of Object.keys(cfg.deleting_plugins)) {
         const entry = cfg.deleting_plugins[slug] || {};
         const result = uninstallPlugin(slug, {
-            force: true,
+            force: false,
             mode: entry.self && entry.data === false ? "plugin" : (entry.self === false && entry.data ? "data" : "all"),
         });
-        delete cfg.deleting_plugins[slug];
+        if (result.ok) delete cfg.deleting_plugins[slug];
+        else log("排队删除未完成，保留重试: " + slug);
         done.push({ slug, result });
     }
     try { writeJson(lqFile, cfg); } catch (e) { /* 忽略 */ }

@@ -14,6 +14,7 @@ try {
 } catch (e) { /* 忽略 */ }
 
 const sync = (path, args = []) => ipcRenderer.sendSync("mqga.sync", path, args);
+const invoke = (methodPath, args = []) => ipcRenderer.invoke("mqga.async", methodPath, args);
 
 /**
  * 登录窗口保护。
@@ -120,9 +121,9 @@ const apiMethods = {
             return sync(["plugin", "delete"], [slug, options || {}]);
         },
         uninstall: async (slug, options) => sync(["plugin", "delete"], [slug, options || {}]),
-        pickAndInstall: async (mode) => sync(["pickAndInstallPlugin"], [mode]),
+        pickAndInstall: async (mode) => invoke(["pickAndInstallPlugin"], [mode]),
         // 面板里「安装文件夹」那一行用的（LQ 的 view.html 没有这行，是 MGQA 加的）
-        pickAndInstallFolder: async () => sync(["pickAndInstallPlugin"], ["folder"]),
+        pickAndInstallFolder: async () => invoke(["pickAndInstallPlugin"], ["folder"]),
         installFromPath: async (source, options) => sync(["installPluginFromPath"], [source, options || {}]),
         // Electron 32+ 删除了 File.path：主世界的 File 要经预加载的 webUtils 换出真实路径
         getPathForFile: (file) => {

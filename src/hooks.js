@@ -6,6 +6,10 @@
  */
 const path = require("path");
 const host = require("./host.js");
+const safePaths = require("./paths-safe.js");
+const { pathToFileURL } = require("url");
+const nativePreloadSessions = new WeakSet();
+const ipcInstalled = new WeakSet();
 
 const windowProxyCache = new WeakMap();
 const exportsProxyCache = new WeakMap();
@@ -49,63 +53,44 @@ const protocolRegistered = new WeakSet();
 
 function registerProtocolOn(electron, protocol) {
     if (!protocol || protocolRegistered.has(protocol)) return;
-    protocolRegistered.add(protocol);
-    try {
-        protocol.handle("mqga", (request) => {
-            const url = new URL(request.url);
-            const hostname = url.hostname;
-            const relative = decodeURIComponent(url.pathname).replace(/^\/+/, "");
-            const base = hostname === "profile" ? host.PATHS.profile : host.PATHS.root;
-            const target = path.normalize(path.join(base, relative));
-            if (!target.startsWith(host.PATHS.root) && !target.startsWith(host.PATHS.profile)) {
-                return new Response("forbidden", { status: 403 });
-            }
-            return electron.net.fetch(`file:///${target.replace(/\\/g, "/")}`);
-        });
-        host.log("mqga:// 协议处理器已注册");
-        // local:// 兼容层：local:///绝对路径 或 local://root|profile/相对路径
-        // 注意：Windows 插件常拼出 local:///D:\a\b.html 这种带反斜杠的 URL，这里统一归一化
-        protocol.handle("local", async (request) => {
-            try {
-                let rawPath = "";
-                let hostname = "";
-                try {
-                    const url = new URL(request.url);
-                    hostname = url.hostname || "";
-                    rawPath = decodeURIComponent(url.pathname || "");
-                } catch (e) {
-                    // URL 无法解析时退化为手工拆分
-                    const rest = String(request.url).replace(/^local:\/\//i, "");
-                    const slash = rest.indexOf("/");
-                    hostname = slash >= 0 ? rest.slice(0, slash) : rest;
-                    rawPath = slash >= 0 ? rest.slice(slash) : "/";
-                }
-                rawPath = rawPath.replace(/\\/g, "/");
-                let target;
-                if (hostname === "root" || hostname === "profile") {
-                    const base = hostname === "profile" ? host.PATHS.profile : host.PATHS.root;
-                    target = path.normalize(path.join(base, rawPath.replace(/^\/+/, "")));
-                } else {
-                    target = path.normalize(decodeURIComponent(rawPath.replace(/^\/([a-zA-Z]:)/, "$1")));
-                }
-                const fileUrl = `file:///${target.replace(/\\/g, "/")}`;
-                const response = await electron.net.fetch(fileUrl);
-                host.log("local:// -> " + (response.ok ? "ok" : "status " + response.status) + " " + target);
-                return response;
-            } catch (e) {
-                host.log("local:// 处理失败: " + request.url + " :: " + ((e && e.message) || e));
-                return new Response("not found", { status: 404 });
-            }
-        });
-        host.log("local:// 兼容协议已注册");
-    } catch (e) {
-        protocolRegistered.delete(protocol);
-        if (String(e && e.message).includes("Failed to register protocol")) {
-            host.log("mqga:// 处理器已在其它会话注册，跳过");
-        } else {
-            host.log("注册 mqga:// 处理器失败:", e);
+    if (!electron.app.isReady()) return;
+    const allowed = [host.PATHS.root, host.PATHS.profile, host.PATHS.plugins];
+    const fetchFile = async (file) => {
+        const target = safePaths.assertAllowed(file, allowed);
+        return electron.net.fetch(pathToFileURL(target).href);
+    };
+    let allRegistered = true;
+    const register = (scheme, handler) => {
+        try { protocol.handle(scheme, handler); host.log(scheme + ":// 协议处理器已注册"); }
+        catch (e) {
+            allRegistered = false;
+            host.log(scheme + ":// 注册未完成，将允许重试:", e);
         }
-    }
+    };
+    register("mqga", async (request) => {
+        try {
+            const url = new URL(request.url);
+            if (url.hostname !== "root" && url.hostname !== "profile") return new Response("bad host", {status:400});
+            const base = url.hostname === "profile" ? host.PATHS.profile : host.PATHS.root;
+            const relative = decodeURIComponent(url.pathname).replace(/^\/+/, "");
+            return await fetchFile(path.join(base, relative));
+        } catch (e) { return new Response("forbidden", {status:403}); }
+    });
+    register("local", async (request) => {
+        try {
+            const url = new URL(String(request.url).replace(/\\/g, "/"));
+            const decoded = decodeURIComponent(url.pathname || "");
+            let target;
+            if (url.hostname === "root" || url.hostname === "profile") {
+                const base = url.hostname === "profile" ? host.PATHS.profile : host.PATHS.root;
+                target = path.join(base, decoded.replace(/^\/+/, ""));
+            } else {
+                target = decoded.replace(/^\/([a-zA-Z]:)/, "$1");
+            }
+            return await fetchFile(target);
+        } catch (e) { return new Response("forbidden", {status:403}); }
+    });
+    if (allRegistered) protocolRegistered.add(protocol);
 }
 
 function registerProtocol(electron, protocol) {
@@ -120,32 +105,31 @@ function registerProtocol(electron, protocol) {
 }
 
 function injectPreloadIntoSession(session) {
-    if (!session || instrumentedSessions.has(session)) return;
-    instrumentedSessions.add(session);
-    try {
-        if (typeof session.registerPreloadScript === "function") {
+    if (!session) return false;
+    if (nativePreloadSessions.has(session)) return true;
+    if (instrumentedSessions.has(session)) return false;
+    if (typeof session.registerPreloadScript === "function") {
+        try {
             session.registerPreloadScript({ type: "frame", filePath: host.PATHS.preload });
+            nativePreloadSessions.add(session);
+            instrumentedSessions.add(session);
             host.log("已向会话注册预加载脚本（registerPreloadScript）");
-        }
-    } catch (e) {
-        host.log("registerPreloadScript 失败:", e);
+            return true;
+        } catch (e) { host.log("registerPreloadScript 失败，保留后续重试:", e); }
     }
     try {
-        // 兼容旧式 Electron：包装 session.getPreloadScripts 与 webContents._getPreloadPaths
         const origin = session.getPreloadScripts?.bind(session);
         if (origin) {
-            const patched = function (...args) {
-                const list = origin(...args) || [];
-                if (!list.some((item) => item?.filePath === host.PATHS.preload)) {
-                    list.unshift({ filePath: host.PATHS.preload, type: "frame" });
-                }
+            Object.defineProperty(session, "getPreloadScripts", { configurable: true, value: (...args) => {
+                const list = Array.from(origin(...args) || []);
+                if (!list.some((item) => item?.filePath === host.PATHS.preload)) list.unshift({ filePath: host.PATHS.preload, type: "frame" });
                 return list;
-            };
-            Object.defineProperty(session, "getPreloadScripts", { value: patched, configurable: true });
+            }});
+            instrumentedSessions.add(session);
+            host.log("已注册兼容预加载路径");
         }
-    } catch (e) {
-        host.log("包装 getPreloadScripts 失败:", e);
-    }
+    } catch (e) { host.log("包装 getPreloadScripts 失败，保留重试:", e); }
+    return false;
 }
 
 function sessionName(webContents) {
@@ -165,14 +149,14 @@ function instrumentWindow(win) {
     const webContents = win?.webContents;
     if (!webContents) return;
     host.log("BrowserWindow 已拦截，注入预加载脚本（session=" + (webContents.session ? "ok" : "?") + " partition=" + sessionName(webContents) + " id=" + webContents.id + "）");
-    injectPreloadIntoSession(webContents.session);
+    const nativePreload = injectPreloadIntoSession(webContents.session);
     try {
         const original = webContents._getPreloadPaths?.bind(webContents);
-        if (original) {
+        if (original && !nativePreload) {
             Object.defineProperty(webContents, "_getPreloadPaths", {
                 configurable: true,
                 value: (...args) => {
-                    const list = original(...args) || [];
+                    const list = Array.from(original(...args) || []);
                     if (!list.includes(host.PATHS.preload)) list.unshift(host.PATHS.preload);
                     return list;
                 },
@@ -249,10 +233,11 @@ function installElectronHook() {
     const cached = require.cache["electron"];
     if (!cached) {
         host.log("警告：require.cache 中没有 electron 模块，退回直接改写导出对象");
+        const Original = electron.BrowserWindow;
         try {
             Object.defineProperty(electron, "BrowserWindow", {
                 configurable: true,
-                get: () => wrapBrowserWindow(electron, Object.getPrototypeOf(electron).constructor && require("electron").BrowserWindow),
+                get: () => wrapBrowserWindow(electron, Original),
             });
         } catch (e) {
             host.log("直接改写 BrowserWindow 失败:", e);
@@ -286,23 +271,38 @@ function sanitize(value) {
     try { return JSON.parse(JSON.stringify(value)); } catch (e) { return String(value); }
 }
 
+function invokeApi(root, methodPath, args) {
+    if (!Array.isArray(methodPath) || !methodPath.length || !methodPath.every((key) => typeof key === "string" && !["__proto__", "prototype", "constructor"].includes(key))) throw new Error("无效 API 路径");
+    let owner = root, target = root;
+    for (const key of methodPath) {
+        owner = target;
+        target = target?.[key];
+        if (target === undefined) throw new Error("未知 API 路径: " + methodPath.join("."));
+    }
+    return typeof target === "function" ? target.apply(owner, Array.isArray(args) ? args : []) : target;
+}
+function apiError(methodPath, error) {
+    host.log("API 调用失败 " + (Array.isArray(methodPath) ? methodPath.join(".") : "?"), error);
+    return { mqga_error: error?.message || String(error) };
+}
 function resolveApi(root, methodPath, args) {
     try {
-        let target = root;
-        for (const key of methodPath) {
-            target = target?.[key];
-            if (target === undefined) throw new Error(`未知的 API 路径: ${methodPath.join(".")}`);
+        const result = invokeApi(root, methodPath, args);
+        if (result && typeof result.then === "function") {
+            Promise.resolve(result).catch(() => {});
+            throw new Error("异步 API 必须使用 mqga.async / ipcRenderer.invoke");
         }
-        const result = typeof target === "function" ? target(...(args || [])) : target;
         return sanitize(result);
-    } catch (e) {
-        host.log(`API 调用失败 ${methodPath?.join?.(".")}:`, e);
-        return { mqga_error: String((e && e.message) || e) };
-    }
+    } catch (e) { return apiError(methodPath, e); }
+}
+async function resolveApiAsync(root, methodPath, args) {
+    try { return sanitize(await invokeApi(root, methodPath, args)); }
+    catch (e) { return apiError(methodPath, e); }
 }
 
 function installIpc(electron, state) {
     const { ipcMain } = electron;
+    if (ipcInstalled.has(ipcMain)) return;
     ipcMain.on("mqga.sync", (event, methodPath, args) => {
         // 渲染进程来的日志带上账号分区（persist:qqnt_<uid>），便于区分是哪个账号的窗口
         if (Array.isArray(methodPath) && methodPath[0] === "log" && Array.isArray(args) && args.length) {
@@ -310,23 +310,9 @@ function installIpc(electron, state) {
         }
         event.returnValue = resolveApi(state.api, methodPath, args);
     });
-    ipcMain.handle("mqga.async", async (event, methodPath, args) => resolveApi(state.api, methodPath, args));
-    ipcMain.handle("mqga.readFile", async (event, file) => {
-        const resolved = path.resolve(String(file));
-        const allowed = [host.PATHS.root, host.PATHS.profile, host.PATHS.plugins];
-        if (!allowed.some((base) => resolved.toLowerCase().startsWith(base.toLowerCase()))) {
-            throw new Error("拒绝读取宿主之外的路径: " + resolved);
-        }
-        return readUtf8(resolved);
-    });
-    const assertAllowed = (file) => {
-        const resolved = path.resolve(String(file));
-        const allowed = [host.PATHS.root, host.PATHS.profile, host.PATHS.plugins];
-        if (!allowed.some((base) => resolved.toLowerCase().startsWith(base.toLowerCase()))) {
-            throw new Error("拒绝访问宿主之外的路径: " + resolved);
-        }
-        return resolved;
-    };
+    ipcMain.handle("mqga.async", async (event, methodPath, args) => resolveApiAsync(state.api, methodPath, args));
+    const assertAllowed = (file) => safePaths.assertAllowed(file, [host.PATHS.root, host.PATHS.profile, host.PATHS.plugins]);
+    ipcMain.handle("mqga.readFile", async (event, file) => readUtf8(assertAllowed(file)));
     ipcMain.on("mqga.readText", (event, file) => {
         try { event.returnValue = readUtf8(assertAllowed(file)); }
         catch (e) { host.log("readText 失败:", e); event.returnValue = null; }
@@ -358,6 +344,7 @@ function installIpc(electron, state) {
         }
     });
     ipcMain.handle("mqga.rendererScripts", async () => state.rendererScripts());
+    ipcInstalled.add(ipcMain);
     host.log("IPC 桥已建立");
 }
 
