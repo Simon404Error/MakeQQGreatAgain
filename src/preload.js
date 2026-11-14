@@ -114,8 +114,9 @@ const apiMethods = {
         // 本宿主用 delete(slug, { mode }) —— 这里做一次转译，保证 LQ 的面板代码原样可用。
         delete: async (slug, options, now) => {
             if (Array.isArray(options)) {
+                if (options.length !== 2 || options.some((value) => typeof value !== "boolean")) return {ok:false,error:"删除选项必须是两个布尔值"};
                 const [self, data] = options;
-                const mode = self && data ? "all" : (self ? "plugin" : (data ? "data" : "data"));
+                const mode = self && data ? "all" : (self ? "plugin" : (data ? "data" : "none"));
                 return sync(["plugin", "delete"], [slug, { mode, self: !!self, data: !!data, now: now !== false }]);
             }
             return sync(["plugin", "delete"], [slug, options || {}]);
@@ -145,7 +146,7 @@ const apiMethods = {
     reloadPlugins: async () => sync(["reloadPlugins"], []),
     setLoaderConfig: async (patch) => sync(["setLoaderConfig"], [patch || {}]),
     installPluginFromPath: async (source, options) => sync(["installPluginFromPath"], [source, options || {}]),
-    pickAndInstallPlugin: async (mode) => sync(["pickAndInstallPlugin"], [mode]),
+    pickAndInstallPlugin: async (mode) => invoke(["pickAndInstallPlugin"], [mode]),
 };
 
 // LiteLoaderQQNT 兼容字段：LQ 的渲染层会读 LiteLoader.versions.* / LiteLoader.package.liteloader.repository

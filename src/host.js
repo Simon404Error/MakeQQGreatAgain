@@ -394,63 +394,61 @@ function findPluginRoot(dir) {
     return null;
 }
 
+function isValidPluginSlug(value) {
+    return typeof value === "string" && value.length > 0 && value !== "." && value !== ".." &&
+        !/[\\/:*?"<>|\x00-\x1f]/.test(value) && !/[. ]$/.test(value) &&
+        !/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(value) &&
+        !value.startsWith(".");
+}
+
 function installPlugin(source, options = {}) {
     const src = String(source || "").trim();
-    if (!src) { log("安装插件失败: 未指定来源"); return { ok: false, error: "未指定插件来源" }; }
-    if (!fs.existsSync(src)) { log("安装插件失败: 路径不存在 " + src); return { ok: false, error: "路径不存在: " + src }; }
-
-    log("安装插件开始: source=" + src);
-    const isZip = fs.statSync(src).isFile();
-    if (isZip && !/\.zip$/i.test(src)) { log("安装插件失败: 不是 zip " + src); return { ok: false, error: "只支持 .zip 压缩包或文件夹: " + src }; }
-
-    const staging = path.join(PATHS.plugins, ".installing-" + Date.now());
+    if (!src) return {ok:false,error:"未指定插件来源"};
+    let staging = null, previous = null, dest = null, committed = false, slug = null;
+    const cleanup = (dir) => {
+        if (!dir) return;
+        try { fs.rmSync(dir, {recursive:true,force:true}); }
+        catch (error) { log("安装清理未完成，保留目录: " + dir, error); }
+    };
     try {
-        fs.mkdirSync(staging, { recursive: true });
+        const stat = fs.statSync(src);
+        const isZip = stat.isFile();
+        if (!isZip && !stat.isDirectory()) return {ok:false,error:"来源不是文件夹或 zip"};
+        if (isZip && !/\.zip$/i.test(src)) return {ok:false,error:"只支持 zip 或文件夹"};
+        fs.mkdirSync(PATHS.plugins, {recursive:true});
+        staging = fs.mkdtempSync(path.join(PATHS.plugins,".installing-"));
         if (isZip) extractZip(src, staging);
-        else fs.cpSync(src, staging, { recursive: true });
-
+        else fs.cpSync(src, staging, {recursive:true});
         const root = findPluginRoot(staging);
-        if (!root) {
-            fs.rmSync(staging, { recursive: true, force: true });
-            log("安装插件失败: 未找到 manifest.json（source=" + src + "）");
-            return { ok: false, error: "压缩包/文件夹里没有找到 manifest.json，不是有效的插件" };
-        }
-        let manifest = {};
-        try {
-            manifest = JSON.parse(fs.readFileSync(path.join(root, "manifest.json"), "utf8").replace(/^\uFEFF/, ""));
-        } catch (e) {
-            fs.rmSync(staging, { recursive: true, force: true });
-            log("安装插件失败: manifest.json 解析失败 " + ((e && e.message) || e));
-            return { ok: false, error: "manifest.json 解析失败: " + ((e && e.message) || e) };
-        }
-        const slug = String(manifest.slug || path.basename(root)).trim();
-        if (!slug || /[\\/]|\.\./.test(slug)) {
-            fs.rmSync(staging, { recursive: true, force: true });
-            log("安装插件失败: slug 非法 " + slug);
-            return { ok: false, error: "插件 slug 非法: " + slug };
-        }
-        const dest = path.join(PATHS.plugins, slug);
-        let replaced = false;
+        if (!root) throw new Error("压缩包/文件夹中没有 manifest.json");
+        const manifest = JSON.parse(fs.readFileSync(path.join(root,"manifest.json"),"utf8").replace(/^\uFEFF/,""));
+        if (!manifest || typeof manifest.slug !== "string") throw new Error("manifest.json 缺少有效的插件 slug");
+        if (manifest.slug !== manifest.slug.trim()) throw new Error("插件 slug 不能带首尾空白");
+        slug = manifest.slug;
+        if (!isValidPluginSlug(slug)) throw new Error("插件 slug 非法: " + slug);
+        manifest.slug = slug;
+        dest = path.join(PATHS.plugins, slug);
         if (fs.existsSync(dest)) {
-            // 覆盖安装：只做"整体挪走"，挪不动就中止安装（绝不先删后失败，避免把现有插件掏空）
             const aside = moveAside(dest);
-            if (!aside.ok) {
-                fs.rmSync(staging, { recursive: true, force: true });
-                return { ok: false, error: "同名插件已存在且无法挪走（文件正被 QQ 占用，先关掉 QQ 再装）: " + aside.error, exists: true, slug };
-            }
-            replaced = true;
-            // 挪走后再尽力清掉回收站里那份
-            try { fs.rmSync(aside.to, { recursive: true, force: true }); } catch (e) { /* 忽略 */ }
+            if (!aside.ok) throw new Error("旧插件无法移入备份，安装已中止: " + aside.error);
+            previous = aside.to;
         }
+        // Keep the old version until the new directory is atomically activated.
         fs.renameSync(root, dest);
-        fs.rmSync(staging, { recursive: true, force: true });
-        log("已安装插件: " + slug + " (" + ((manifest.name) || "?") + " v" + ((manifest.version) || "?") + ")"
-            + (replaced ? " [覆盖原目录]" : "") + " <- " + src);
-        return { ok: true, slug, replaced, manifest: { name: manifest.name, version: manifest.version, description: manifest.description } };
-    } catch (e) {
-        try { fs.rmSync(staging, { recursive: true, force: true }); } catch (e2) { /* 忽略 */ }
-        log("安装插件失败: " + ((e && e.message) || e));
-        return { ok: false, error: (e && e.message) || String(e) };
+        committed = true;
+        cleanup(staging);
+        cleanup(previous);
+        log("已安装插件: " + slug + " v" + (manifest.version || "?") + (previous ? " [覆盖原目录]" : ""));
+        return {ok:true,slug,replaced:!!previous,manifest:{name:manifest.name,version:manifest.version,description:manifest.description}};
+    } catch (error) {
+        let restored = false, recoveryPath;
+        if (previous && !committed) {
+            try { fs.renameSync(previous, dest); restored = true; }
+            catch (rollbackError) { recoveryPath = previous; log("旧插件保留在恢复目录: " + previous, rollbackError); }
+        }
+        cleanup(staging);
+        log("安装插件失败:", error);
+        return {ok:false,slug,error:error?.message || String(error),restored,...(recoveryPath ? {recoveryPath} : {})};
     }
 }
 
@@ -463,62 +461,79 @@ function protectedPlugins() {
 }
 
 function uninstallPlugin(slug, options = {}) {
-    const name = String(slug || "").trim();
-    if (!name) return { ok: false, error: "缺少插件 slug" };
-    if (/[\\/]|\.\./.test(name)) return { ok: false, error: "非法 slug: " + name };
-    if (options.force !== true && protectedPlugins().includes(name)) {
-        return { ok: false, error: "该插件在 protected_plugins 中，已受保护: " + name, protected: true, slug: name };
-    }
-    // mode: all(默认) | plugin(只删本体) | data(只删数据)
-    const mode = options.mode || (options.keepData === true ? "plugin" : "all");
-    const pluginDir = path.join(PATHS.plugins, name);
-    const dataDir = path.join(PATHS.data, name);
-    const dirs = {};
-    const removeDir = (dir, label) => {
-        if (!fs.existsSync(dir)) { dirs[label] = "not-found"; return; }
-        try {
-            dirs[label] = removeDirRobust(dir);
-        } catch (e) {
-            dirs[label] = "error: " + ((e && e.message) || e);
-        }
+    const name = typeof slug === "string" ? slug.trim() : "";
+    if (!isValidPluginSlug(name)) return {ok:false,error:"非法插件 slug: " + name};
+    if (!options || typeof options !== "object" || Array.isArray(options)) return {ok:false,error:"删除选项必须为对象"};
+    const mode = Object.prototype.hasOwnProperty.call(options,"mode") ? options.mode : (options.keepData === true ? "plugin" : "all");
+    if (!["all","plugin","data","none"].includes(mode)) return {ok:false,error:"未知的删除模式"};
+    if (mode === "none") return {ok:true,slug:name,mode,dirs:{},skipped:true};
+    if (options.force !== true && protectedPlugins().includes(name)) return {ok:false,error:"插件已受保护: " + name,protected:true,slug:name};
+    const pluginDir = path.join(PATHS.plugins,name), dataDir = path.join(PATHS.data,name), dirs = {};
+    const success = (status) => ["removed","not-found","moved-to-trash"].includes(status);
+    const remove = (dir,label) => {
+        try { dirs[label] = fs.existsSync(dir) ? removeDirRobust(dir) : "not-found"; }
+        catch (error) { dirs[label] = "error: " + (error?.message || String(error)); }
     };
-    if (mode !== "data") removeDir(pluginDir, "plugin");
-    if (mode !== "plugin") removeDir(dataDir, "data");
-    try {
-        const cfg = loaderConfig();
-        if (Array.isArray(cfg.disabled_plugins) && cfg.disabled_plugins.includes(name)) {
-            cfg.disabled_plugins = cfg.disabled_plugins.filter((item) => item !== name);
-            saveLoaderConfig(cfg);
-            dirs.config = "cleaned";
-        }
-    } catch (e) {
-        dirs.config = "error: " + ((e && e.message) || e);
+    if (mode !== "data") remove(pluginDir,"plugin");
+    if (mode !== "plugin") {
+        if (mode === "all" && !success(dirs.plugin)) dirs.data = "skipped: plugin removal failed";
+        else remove(dataDir,"data");
     }
-    log("已卸载插件: " + name + " mode=" + mode + " " + JSON.stringify(dirs));
-    const success = (status) => ["removed", "not-found", "moved-to-trash"].includes(status);
-    const ok = mode === "data" ? success(dirs.data) : mode === "plugin" ? success(dirs.plugin) : success(dirs.plugin) && success(dirs.data);
-    return { ok, slug: name, mode, dirs };
+    // Resetting data or failing to remove a plugin must not change its enable state.
+    if (mode !== "data" && success(dirs.plugin)) {
+        try {
+            const cfg = loaderConfig();
+            if (Array.isArray(cfg.disabled_plugins) && cfg.disabled_plugins.includes(name)) {
+                cfg.disabled_plugins = cfg.disabled_plugins.filter((item) => item !== name);
+                saveLoaderConfig(cfg);
+            }
+            const lqFile = path.join(PATHS.data,"LiteLoader","config.json"), lq = readJson(lqFile,null);
+            if (lq && Array.isArray(lq.disabled_plugins) && lq.disabled_plugins.includes(name)) {
+                lq.disabled_plugins = lq.disabled_plugins.filter((item) => item !== name);
+                writeJson(lqFile,lq);
+            }
+            dirs.config = "cleaned";
+        } catch (error) { dirs.config = "error: " + (error?.message || String(error)); }
+    }
+    const filesRemoved = mode === "data" ? success(dirs.data) : mode === "plugin" ? success(dirs.plugin) : success(dirs.plugin) && success(dirs.data);
+    const ok = filesRemoved && !String(dirs.config || "").startsWith("error:");
+    log("插件删除结果: " + name + " mode=" + mode + " " + JSON.stringify(dirs));
+    return {ok,slug:name,mode,dirs};
 }
 
 /* ---------- LiteLoaderQQNT 面板的"排队删除"：deleting_plugins 在下次启动时执行 ---------- */
 
 function applyPendingPluginDeletions() {
-    const lqFile = path.join(PATHS.data, "LiteLoader", "config.json");
-    const cfg = readJson(lqFile, null);
-    if (!cfg || typeof cfg !== "object" || !cfg.deleting_plugins) return [];
-    const done = [];
+    const lqFile = path.join(PATHS.data,"LiteLoader","config.json"), cfg = readJson(lqFile,null);
+    if (!cfg || !cfg.deleting_plugins || typeof cfg.deleting_plugins !== "object" || Array.isArray(cfg.deleting_plugins)) return [];
+    const done = [], completed = [];
     for (const slug of Object.keys(cfg.deleting_plugins)) {
-        const entry = cfg.deleting_plugins[slug] || {};
-        const result = uninstallPlugin(slug, {
-            force: false,
-            mode: entry.self && entry.data === false ? "plugin" : (entry.self === false && entry.data ? "data" : "all"),
-        });
-        if (result.ok) delete cfg.deleting_plugins[slug];
+        const entry = cfg.deleting_plugins[slug];
+        let result;
+        if (!entry || typeof entry.self !== "boolean" || typeof entry.data !== "boolean") {
+            result = {ok:false,error:"排队删除的 self/data 必须是布尔值"};
+        } else {
+            const mode = entry.self ? (entry.data ? "all" : "plugin") : (entry.data ? "data" : "none");
+            result = uninstallPlugin(slug,{force:false,mode});
+        }
+        if (result.ok) completed.push({slug,entry});
         else log("排队删除未完成，保留重试: " + slug);
-        done.push({ slug, result });
+        done.push({slug,result});
     }
-    try { writeJson(lqFile, cfg); } catch (e) { /* 忽略 */ }
-    if (done.length) log("已执行 LQ 面板排队的插件删除: " + JSON.stringify(done));
+    if (completed.length) {
+        try {
+            // Re-read: uninstall may have updated the legacy disabled list.
+            // Never overwrite other settings or a newly queued deletion request.
+            const latest = readJson(lqFile,null);
+            if (latest && latest.deleting_plugins && typeof latest.deleting_plugins === "object" && !Array.isArray(latest.deleting_plugins)) {
+                let changed = false;
+                for (const {slug,entry} of completed) {
+                    if (JSON.stringify(latest.deleting_plugins[slug]) === JSON.stringify(entry)) { delete latest.deleting_plugins[slug]; changed = true; }
+                }
+                if (changed) writeJson(lqFile,latest);
+            }
+        } catch (error) { log("删除队列保存失败，保留重试:",error); }
+    }
     return done;
 }
 

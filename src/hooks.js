@@ -49,21 +49,22 @@ function registerSchemes(electron) {
     }
 }
 
-const protocolRegistered = new WeakSet();
+const protocolRegistered = new WeakMap();
 
 function registerProtocolOn(electron, protocol) {
-    if (!protocol || protocolRegistered.has(protocol)) return;
-    if (!electron.app.isReady()) return;
+    if (!protocol || !electron.app.isReady()) return;
+    let registered = protocolRegistered.get(protocol);
+    if (!registered) { registered = new Set(); protocolRegistered.set(protocol,registered); }
+    if (registered.has("mqga") && registered.has("local")) return;
     const allowed = [host.PATHS.root, host.PATHS.profile, host.PATHS.plugins];
     const fetchFile = async (file) => {
         const target = safePaths.assertAllowed(file, allowed);
         return electron.net.fetch(pathToFileURL(target).href);
     };
-    let allRegistered = true;
     const register = (scheme, handler) => {
-        try { protocol.handle(scheme, handler); host.log(scheme + ":// 协议处理器已注册"); }
+        if (registered.has(scheme)) return;
+        try { protocol.handle(scheme, handler); registered.add(scheme); host.log(scheme + ":// 协议处理器已注册"); }
         catch (e) {
-            allRegistered = false;
             host.log(scheme + ":// 注册未完成，将允许重试:", e);
         }
     };
@@ -90,7 +91,7 @@ function registerProtocolOn(electron, protocol) {
             return await fetchFile(target);
         } catch (e) { return new Response("forbidden", {status:403}); }
     });
-    if (allRegistered) protocolRegistered.add(protocol);
+    // Successful schemes remain registered if the other scheme needs a retry.
 }
 
 function registerProtocol(electron, protocol) {

@@ -6,6 +6,6 @@
     "private": true,
     "license": "MIT",
     "scripts": {
-        "test": "node --test tests/loader.test.cjs"
+        "test": "node --test tests/loader.test.cjs tests/lifecycle.test.cjs"
     }
 }
